@@ -16,9 +16,12 @@
 
 package org.dmfs.tasks.notification;
 
+import android.annotation.SuppressLint;
 import android.annotation.TargetApi;
 import android.app.AlarmManager;
 import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
 import android.content.ContentProviderOperation;
@@ -79,6 +82,9 @@ public class NotificationUpdaterService extends Service
     private static final int REQUEST_CODE_DELAY = 2;
     private static final int REQUEST_CODE_UNPIN = 3;
 
+    private static final String CHANNEL_PINNED = "org.dmfs.opentasks.pinned";
+    private static final int DUMMY_NOTIFICATION_ID = -10;
+
     // actions
     public static final String ACTION_PINNED_TASK_DUE = "org.dmfs.tasks.intent.ACTION_PINNED_TASK_DUE";
     public static final String ACTION_PINNED_TASK_START = "org.dmfs.tasks.intent.ACTION_PINNED_TASK_START";
@@ -97,10 +103,12 @@ public class NotificationUpdaterService extends Service
     public static final String EXTRA_TIMEZONE = "org.dmfs.tasks.extras.notification.TIMEZONE";
     public static final String EXTRA_ALLDAY = "org.dmfs.tasks.extras.notification.ALLDAY";
 
-    private final NotificationCompat.Builder mBuilder = new Builder(this);
+    private final NotificationCompat.Builder mBuilder = new Builder(this, NotificationCompat.CATEGORY_ALARM);
     private PendingIntent mDateChangePendingIntent;
     ArrayList<ContentSet> mTasksToPin;
     private String mAuthority;
+
+    private int mForegroundPinned = -1;
 
 
     @Override
@@ -117,10 +125,25 @@ public class NotificationUpdaterService extends Service
     }
 
 
+    @SuppressLint("WrongConstant")
     @Override
     public void onCreate()
     {
         mAuthority = AuthorityUtil.taskAuthority(this);
+
+        if (VERSION.SDK_INT >= 26)
+        {
+            NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+            nm.createNotificationChannel(new NotificationChannel(CHANNEL_PINNED, "Pinned Tasks", NotificationManagerCompat.IMPORTANCE_DEFAULT));
+
+            nm.createNotificationChannel(new NotificationChannel(NotificationCompat.CATEGORY_ALARM, "Alarms", NotificationManagerCompat.IMPORTANCE_HIGH));
+
+            // note this notification is to make Android happy, it should never be visible to the user
+            startForeground(DUMMY_NOTIFICATION_ID, new NotificationCompat.Builder(this, NotificationCompat.CATEGORY_ALARM).setTicker("OpenTasks")
+                    .setSmallIcon(R.drawable.ic_24_opentasks)
+                    .build());
+        }
+
         super.onCreate();
         updateNextDayAlarm();
     }
@@ -129,7 +152,6 @@ public class NotificationUpdaterService extends Service
     @Override
     public int onStartCommand(Intent intent, int flags, int startId)
     {
-
         String intentAction = intent.getAction();
         boolean noSignal = intent.getBooleanExtra(NotificationActionUtils.EXTRA_NOTIFICATION_NO_SIGNAL, false);
         if (intentAction != null)
@@ -200,10 +222,36 @@ public class NotificationUpdaterService extends Service
         // check if the service needs to kept alive
         if (mTasksToPin == null || mTasksToPin.isEmpty())
         {
+            if (VERSION.SDK_INT >= 26)
+            {
+                this.stopForeground(true);
+                mForegroundPinned = -1;
+            }
             this.stopSelf();
+        }
+        else if (VERSION.SDK_INT >= 26 && (mForegroundPinned < 0 || !isPinned(mForegroundPinned)))
+        {
+            // on Android 8+ we have to create or change the foreground notification if we didn't do that yet or of the respective task is no longer pinned
+            mBuilder.setChannelId(CHANNEL_PINNED);
+            ContentSet task = mTasksToPin.get(0);
+            startForeground(TaskFieldAdapters.TASK_ID.get(task), makePinNotification(this, mBuilder, task, true, false, false));
+            mForegroundPinned = TaskFieldAdapters.TASK_ID.get(task);
         }
         return Service.START_NOT_STICKY;
 
+    }
+
+
+    private boolean isPinned(long id)
+    {
+        for (ContentSet task : mTasksToPin)
+        {
+            if (id == TaskFieldAdapters.TASK_ID.get(task))
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
 
@@ -225,6 +273,7 @@ public class NotificationUpdaterService extends Service
         {
             boolean isAlreadyShown = pinnedTaskUris.contains(taskContentSet.getUri());
             Integer taskId = TaskFieldAdapters.TASK_ID.get(taskContentSet);
+            mBuilder.setChannelId(CHANNEL_PINNED);
             notificationManager.notify(taskId,
                     makePinNotification(this, mBuilder, taskContentSet, isAlreadyShown && noSignal, isAlreadyShown && noSignal, withHeadsUpNotification));
         }
@@ -241,12 +290,7 @@ public class NotificationUpdaterService extends Service
                 long taskId = ContentUris.parseId(uri);
                 if (taskId > -1 == !containsTask(tasksToPin, uri))
                 {
-
-                    Integer notificationId = Long.valueOf(ContentUris.parseId(uri)).intValue();
-                    if (notificationId != null)
-                    {
-                        notificationManager.cancel(notificationId);
-                    }
+                    notificationManager.cancel((int) taskId);
                 }
             }
         }
@@ -393,6 +437,7 @@ public class NotificationUpdaterService extends Service
         builder.addAction(NotificationUpdaterService.getUnpinAction(context, TaskFieldAdapters.TASK_ID.get(task), task.getUri()));
 
         builder.setDefaults(new Conditional(!noSignal, context).value());
+        builder.setOnlyAlertOnce(noSignal);
 
         return builder.build();
     }
@@ -480,6 +525,11 @@ public class NotificationUpdaterService extends Service
             startIntent.putExtra(TaskContract.EXTRA_TASK_TITLE, notificationAction.title());
             startIntent.putExtra(TaskContract.EXTRA_TASK_TIMESTAMP, notificationAction.getWhen());
             startIntent.putExtra(NotificationActionUtils.EXTRA_NOTIFICATION_NO_SIGNAL, true);
+            if (Build.VERSION.SDK_INT >= 26)
+            {
+                // for now only notify our own package
+                startIntent.setPackage(getPackageName());
+            }
             sendBroadcast(startIntent);
 
             // Due broadcast
@@ -489,6 +539,11 @@ public class NotificationUpdaterService extends Service
             dueIntent.putExtra(TaskContract.EXTRA_TASK_TITLE, notificationAction.title());
             dueIntent.putExtra(TaskContract.EXTRA_TASK_TIMESTAMP, notificationAction.getWhen());
             dueIntent.putExtra(NotificationActionUtils.EXTRA_NOTIFICATION_NO_SIGNAL, true);
+            if (Build.VERSION.SDK_INT >= 26)
+            {
+                // for now only notify our own package
+                dueIntent.setPackage(getPackageName());
+            }
             sendBroadcast(dueIntent);
         }
     }
@@ -660,13 +715,17 @@ public class NotificationUpdaterService extends Service
     private void delayedCancelHeadsUpNotification()
     {
         Handler handler = new Handler(Looper.getMainLooper());
-        final Runnable r = new Runnable()
+        final Runnable r = () ->
         {
-            public void run()
+            Intent intent = new Intent(getBaseContext(), NotificationUpdaterService.class);
+            intent.setAction(ACTION_CANCEL_HEADUP_NOTIFICATION);
+            if (VERSION.SDK_INT < 26)
             {
-                Intent intent = new Intent(getBaseContext(), NotificationUpdaterService.class);
-                intent.setAction(ACTION_CANCEL_HEADUP_NOTIFICATION);
                 startService(intent);
+            }
+            else
+            {
+                startForegroundService(intent);
             }
         };
         handler.postDelayed(r, HEAD_UP_NOTIFICATION_DURATION);
