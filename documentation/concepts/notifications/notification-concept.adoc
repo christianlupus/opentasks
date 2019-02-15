@@ -127,16 +127,18 @@ A task provider operation::
 
     We don't distinguish between UI operations and sync adapter operations. We should
     check if a "notification relevant" field has been updated. This way we can avoid
-    notification updates in case only a field like "title" has been changed.
+    notification updates in case only a field like "description" has been changed.
 
     The following fields are considered notification relevant:
 
+    * title
     * dtstart
     * due
     * status
     * pinned
     * extended property for alarm
     * extended property for geo fences
+    * [anything potentially showing in the notification, see open issues **Notification texts**]
 
     In order to save precious resources we only update task notifications which
     need to be updated.
