@@ -16,7 +16,6 @@ This concept describes how notifications should be handled by OpenTasks.
 * Notification texts (ticker text, title, description ...)
 * Notification actions
 * Notification layout (use inbox style to show task text?)
-* Saving of task state during reboot (open reminder, deferred, confirmed)
 * Use of groups?
 * Implementation details / design
 =========
@@ -32,7 +31,7 @@ We want to use this opportunity to rework and improve notification handling in g
 
 == Triggers
 
-At present there are seven reasons for the notifications to be created or updated:
+At present there are six reasons for the notifications to be created or updated:
 
 A task starts::
 
@@ -57,11 +56,6 @@ A task has been completed, either in the UI, a notification or "remotely" by a s
 A task has been deferred::
 
 The task has been deferred, either in the UI, a notification or "remotely" by a sync adapter.
-
-The device boots up::
-
-The device boots up and some tasks are either started or due in the past.
-This is valid for both reminders during the off-time as well as reminders present before shutdown.
 
 There a more reasons for showing notifications which are not implemented yet, for instance
 
