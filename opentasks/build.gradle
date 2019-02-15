@@ -1,5 +1,7 @@
 apply plugin: 'com.android.application'
-
+if (project.hasProperty('PLAY_STORE_SERVICE_ACCOUNT_CREDENTIALS')) {
+    apply plugin: 'com.github.triplet.play'
+}
 // commit number is only relevant to the application project
 def gitCommitNo = { ->
     def stdout = new ByteArrayOutputStream()
@@ -12,7 +14,6 @@ def gitCommitNo = { ->
 
 android {
     compileSdkVersion COMPILE_SDK_VERSION.toInteger()
-    buildToolsVersion BUILD_TOOLS_VERSION
     defaultConfig {
         applicationId "org.dmfs.tasks"
         minSdkVersion MIN_SDK_VERSION.toInteger()
@@ -21,8 +22,21 @@ android {
         versionName version
         testInstrumentationRunner "android.support.test.runner.AndroidJUnitRunner"
     }
+    if (project.hasProperty("DMFS_RELEASE_KEYSTORE")) {
+        signingConfigs {
+            release {
+                storeFile file(DMFS_RELEASE_KEYSTORE)
+                storePassword DMFS_RELEASE_KEYSTORE_PASSWORD
+                keyAlias DMFS_RELEASE_KEY_ALIAS
+                keyPassword DMFS_RELEASE_KEY_PASSWORD
+            }
+        }
+    }
     buildTypes {
         release {
+            if (project.hasProperty("DMFS_RELEASE_KEYSTORE")) {
+                signingConfig signingConfigs.release
+            }
             minifyEnabled true
             proguardFiles 'proguard.cfg'
         }
@@ -69,11 +83,36 @@ dependencies {
 
     testImplementation deps.junit
     testImplementation deps.robolectric
+    testImplementation deps.jems_testing
 
     androidTestImplementation(deps.support_test_runner) {
         exclude group: 'com.android.support', module: 'support-annotations'
     }
     androidTestImplementation(deps.support_test_rules) {
         exclude group: 'com.android.support', module: 'support-annotations'
+    }
+    implementation project(path: ':opentaskspal')
+}
+
+if (project.hasProperty('PLAY_STORE_SERVICE_ACCOUNT_CREDENTIALS')) {
+    play {
+        serviceAccountCredentials = file(PLAY_STORE_SERVICE_ACCOUNT_CREDENTIALS)
+        // the track is determined automatically by the version number format
+        switch (version){
+            case ~/^(\d+)(\.\d+)*(-\d+-[\w\d]+)?-dirty$/:
+                // work in progress goes to the internal track
+                track = "internal"
+                break
+            case ~/^(\d+)(\.\d+)*-\d+-[\w\d]+$/:
+                // untagged commits go to alpha
+                track = "alpha"
+                break
+            case ~/^(\d+)(\.\d+)*$/:
+                // tagged commits to go beta, from where they get promoted to releases
+                track = "beta"
+                break
+            default:
+                throw new IllegalArgumentException("Unrecognized version format")
+        }
     }
 }

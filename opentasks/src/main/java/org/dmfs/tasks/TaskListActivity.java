@@ -25,6 +25,7 @@ import android.net.Uri;
 import android.os.Build.VERSION;
 import android.os.Bundle;
 import android.os.Handler;
+import android.provider.Settings;
 import android.support.annotation.ColorInt;
 import android.support.annotation.NonNull;
 import android.support.design.widget.AppBarLayout;
@@ -454,9 +455,14 @@ public class TaskListActivity extends BaseActivity implements TaskListFragment.C
 
     private void replaceTaskDetailsFragment(@NonNull Fragment fragment)
     {
-        getSupportFragmentManager().beginTransaction()
-                .setCustomAnimations(0, R.anim.openttasks_fade_exit, 0, 0)
-                .replace(R.id.task_detail_container, fragment, DETAILS_FRAGMENT_TAG).commit();
+        FragmentManager fragmentManager = getSupportFragmentManager();
+        // only change state if the state has not been saved yet, otherwise just drop it
+        if (!fragmentManager.isStateSaved())
+        {
+            fragmentManager.beginTransaction()
+                    .setCustomAnimations(0, R.anim.openttasks_fade_exit, 0, 0)
+                    .replace(R.id.task_detail_container, fragment, DETAILS_FRAGMENT_TAG).commit();
+        }
     }
 
 
@@ -639,7 +645,18 @@ public class TaskListActivity extends BaseActivity implements TaskListFragment.C
         }
         else if (item.getItemId() == R.id.opentasks_menu_app_settings)
         {
-            startActivity(new Intent(this, AppSettingsActivity.class));
+            if (VERSION.SDK_INT < 26)
+            {
+                startActivity(new Intent(this, AppSettingsActivity.class));
+            }
+            else
+            {
+                // for now just open the notification settings, which is all we currently support anyway
+                Intent intent = new Intent();
+                intent.setAction(Settings.ACTION_APP_NOTIFICATION_SETTINGS);
+                intent.putExtra(Settings.EXTRA_APP_PACKAGE, getPackageName());
+                startActivity(intent);
+            }
             return true;
         }
         else

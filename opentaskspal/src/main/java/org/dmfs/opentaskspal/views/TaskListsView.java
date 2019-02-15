@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 dmfs GmbH
+ * Copyright 2018 dmfs GmbH
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,26 +14,25 @@
  * limitations under the License.
  */
 
-package org.dmfs.provider.tasks.processors.tasks.instancedata;
+package org.dmfs.opentaskspal.views;
 
-import android.content.ContentValues;
+import android.content.ContentProviderClient;
 
-import org.dmfs.jems.optional.Optional;
-import org.dmfs.jems.single.Single;
-import org.dmfs.jems.single.decorators.DelegatingSingle;
-import org.dmfs.rfc5545.DateTime;
+import org.dmfs.android.contentpal.View;
+import org.dmfs.android.contentpal.views.BaseView;
+import org.dmfs.android.contentpal.views.DelegatingView;
 import org.dmfs.tasks.contract.TaskContract;
 
 
 /**
- * A decorator to a {@link Single} of {@link ContentValues} adding start data.
+ * {@link View} for the {@link TaskContract.TaskLists} table.
  *
  * @author Marten Gajda
  */
-public final class StartDated extends DelegatingSingle<ContentValues>
+public final class TaskListsView extends DelegatingView<TaskContract.TaskLists>
 {
-    public StartDated(Optional<DateTime> start, Single<ContentValues> delegate)
+    public TaskListsView(String authority, ContentProviderClient client)
     {
-        super(new Dated(start, TaskContract.Instances.INSTANCE_START, TaskContract.Instances.INSTANCE_START_SORTING, delegate));
+        super(new BaseView<>(client, TaskContract.TaskLists.getContentUri(authority)));
     }
 }

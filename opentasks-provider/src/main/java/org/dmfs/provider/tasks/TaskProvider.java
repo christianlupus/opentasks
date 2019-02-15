@@ -32,9 +32,11 @@ import android.database.sqlite.SQLiteDatabase;
 import android.database.sqlite.SQLiteOpenHelper;
 import android.database.sqlite.SQLiteQueryBuilder;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.text.TextUtils;
+import android.util.Log;
 
 import org.dmfs.iterables.EmptyIterable;
 import org.dmfs.provider.tasks.TaskDatabaseHelper.OnDatabaseOperationListener;
@@ -75,8 +77,10 @@ import org.dmfs.tasks.contract.TaskContract.TaskLists;
 import org.dmfs.tasks.contract.TaskContract.Tasks;
 
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
 
 
 /**
@@ -115,6 +119,7 @@ public final class TaskProvider extends SQLiteContentProvider implements OnAccou
     private static final int OPERATIONS = 100000;
 
     private final static Set<String> TASK_LIST_SYNC_COLUMNS = new HashSet<String>(Arrays.asList(TaskLists.SYNC_ADAPTER_COLUMNS));
+    private static final String TAG = "TaskProvider";
 
     /**
      * A list of {@link EntityProcessor}s to execute when doing operations on the instances table.
@@ -147,9 +152,21 @@ public final class TaskProvider extends SQLiteContentProvider implements OnAccou
     Handler mAsyncHandler;
 
     /**
-     * An {@link ProviderOperationsLog} to track all changes within a transaction.
+     * Boolean to track if there are changes within a transaction.
      */
-    private ProviderOperationsLog mOperationsLog = new ProviderOperationsLog();
+    private boolean mChanged = false;
+
+    /**
+     * This is a per transaction/thread flag which indicates whether new lists with an unknown account have been added.
+     * If this holds true at the end of a transaction a window should be shown to ask the user for access to that account.
+     */
+    private ThreadLocal<Boolean> mStaleListCreated = new ThreadLocal<>();
+
+    /**
+     * The currently known accounts. This may be accessed from various threads, hence the AtomicReference.
+     * By statring with an empty set, we can always guarantee a non-null reference.
+     */
+    private AtomicReference<Set<Account>> mAccountCache = new AtomicReference<>(Collections.emptySet());
 
 
     public TaskProvider()
@@ -745,7 +762,7 @@ public final class TaskProvider extends SQLiteContentProvider implements OnAccou
                         final ListAdapter list = new CursorContentValuesListAdapter(ListAdapter._ID.getFrom(cursor), cursor, new ContentValues());
 
                         mListProcessorChain.delete(db, list, isSyncAdapter);
-                        mOperationsLog.log(ProviderOperation.DELETE, list.uri(mAuthority));
+                        mChanged = true;
                         count++;
                     }
                 }
@@ -787,7 +804,7 @@ public final class TaskProvider extends SQLiteContentProvider implements OnAccou
 
                         mTaskProcessorChain.delete(db, task, isSyncAdapter);
 
-                        mOperationsLog.log(ProviderOperation.DELETE, task.uri(mAuthority));
+                        mChanged = true;
                         count++;
                     }
                 }
@@ -906,11 +923,19 @@ public final class TaskProvider extends SQLiteContentProvider implements OnAccou
                 list.set(ListAdapter.ACCOUNT_TYPE, accountType);
 
                 mListProcessorChain.insert(db, list, isSyncAdapter);
-                mOperationsLog.log(ProviderOperation.INSERT, list.uri(mAuthority));
+                mChanged = true;
 
                 rowId = list.id();
                 result_uri = TaskContract.TaskLists.getContentUri(mAuthority);
-
+                // if the account is unknown we need to ask the user
+                if (Build.VERSION.SDK_INT >= 26 &&
+                        !TaskContract.LOCAL_ACCOUNT_TYPE.equals(accountType) &&
+                        !mAccountCache.get().contains(new Account(accountName, accountType)))
+                {
+                    // store the fact that we have an unknown account in this transaction
+                    mStaleListCreated.set(true);
+                    Log.d(TAG, String.format("List with unknown account %s inserted.", new Account(accountName, accountType)));
+                }
                 break;
             }
             case TASKS:
@@ -918,7 +943,7 @@ public final class TaskProvider extends SQLiteContentProvider implements OnAccou
 
                 mTaskProcessorChain.insert(db, task, isSyncAdapter);
 
-                mOperationsLog.log(ProviderOperation.INSERT, task.uri(mAuthority));
+                mChanged = true;
 
                 rowId = task.id();
                 result_uri = TaskContract.Tasks.getContentUri(mAuthority);
@@ -1044,7 +1069,7 @@ public final class TaskProvider extends SQLiteContentProvider implements OnAccou
                         final ListAdapter list = new CursorContentValuesListAdapter(listId, cursor, cursor.getCount() > 1 ? new ContentValues(values) : values);
 
                         mListProcessorChain.update(db, list, isSyncAdapter);
-                        mOperationsLog.log(ProviderOperation.UPDATE, list.uri(mAuthority));
+                        mChanged = true;
                         count++;
                     }
                 }
@@ -1074,7 +1099,7 @@ public final class TaskProvider extends SQLiteContentProvider implements OnAccou
                         mTaskProcessorChain.update(db, task, isSyncAdapter);
                         if (task.hasUpdates())
                         {
-                            mOperationsLog.log(ProviderOperation.UPDATE, task.uri(mAuthority));
+                            mChanged = true;
                         }
                         count++;
                     }
@@ -1288,13 +1313,25 @@ public final class TaskProvider extends SQLiteContentProvider implements OnAccou
     {
         super.onEndTransaction(callerIsSyncAdapter);
         Intent providerChangedIntent = new Intent(Intent.ACTION_PROVIDER_CHANGED, TaskContract.getContentUri(mAuthority));
-        if (!mOperationsLog.isEmpty())
+        if (mChanged)
         {
             updateNotifications();
+            mChanged = false;
         }
-        // add the change log to the broadcast
-        providerChangedIntent.putExtras(mOperationsLog.toBundle(true));
+        if (Build.VERSION.SDK_INT >= 26)
+        {
+            // for now we only notify our own package
+            // we'll have to figure out how to do this correctly on Android 8+, e.g. how is it done by CalendarProvider and ContactsProvider
+            providerChangedIntent.setPackage(getContext().getPackageName());
+        }
         getContext().sendBroadcast(providerChangedIntent);
+
+        if (Boolean.TRUE.equals(mStaleListCreated.get()))
+        {
+            // notify UI about the stale lists, it's up the UI to deal with this, either by showing a notification or an instant popup.
+            Intent visbilityRequest = new Intent("org.dmfs.tasks.action.STALE_LIST_BROADCAST").setPackage(getContext().getPackageName());
+            getContext().sendBroadcast(visbilityRequest);
+        }
     }
 
 
@@ -1313,6 +1350,8 @@ public final class TaskProvider extends SQLiteContentProvider implements OnAccou
         // notify listeners that the database has been created
         Intent dbInitializedIntent = new Intent(TaskContract.ACTION_DATABASE_INITIALIZED);
         dbInitializedIntent.setDataAndType(TaskContract.getContentUri(mAuthority), TaskContract.MIMETYPE_AUTHORITY);
+        // Android SDK 26 doesn't allow us to send implicit broadcasts, this particular brodcast is only for internal use, so just make it explicit by setting our package name
+        dbInitializedIntent.setPackage(getContext().getPackageName());
         getContext().sendBroadcast(dbInitializedIntent);
     }
 
@@ -1322,14 +1361,7 @@ public final class TaskProvider extends SQLiteContentProvider implements OnAccou
     {
         if (oldVersion < 15)
         {
-            mAsyncHandler.post(new Runnable()
-            {
-                @Override
-                public void run()
-                {
-                    ContentOperation.UPDATE_TIMEZONE.fire(getContext(), null);
-                }
-            });
+            mAsyncHandler.post(() -> ContentOperation.UPDATE_TIMEZONE.fire(getContext(), null));
         }
     }
 
@@ -1344,6 +1376,8 @@ public final class TaskProvider extends SQLiteContentProvider implements OnAccou
     @Override
     public void onAccountsUpdated(Account[] accounts)
     {
+        // cache the known accounts so we can check whether we know accounts for which new lists are added
+        mAccountCache.set(new HashSet<>(Arrays.asList(accounts)));
         // TODO: we probably can move the cleanup code here and get rid of the Utils class
         Utils.cleanUpLists(getContext(), getDatabaseHelper().getWritableDatabase(), accounts, mAuthority);
     }
